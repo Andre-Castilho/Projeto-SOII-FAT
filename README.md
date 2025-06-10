@@ -52,16 +52,19 @@ Cria um novo sistema de arquivos no disco atual, apagando tudo se for o caso. Cr
 
 ### void fat_debug();
 Exibe informações do disco, assim:
->> superblock:
-magic is ok
+
+> superblock:
+>magic is ok
 45 blocks
 1 block fat
->> File "bill":
+
+> File "bill":
 size: 5560 bytes
 Blocks: 34 28
->>File "todo":
+
+>File "todo":
 size: 12330 bytes
-Blocks: 12 13 17 
+Blocks: 12 13 17
 
 Não importa se está montado ou não.
 
