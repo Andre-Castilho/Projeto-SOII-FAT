@@ -288,50 +288,49 @@ int fat_read( char *name, char *buff, int length, int offset){
  	// offset bytes a partir do início do arquivo. Devolve o total de bytes lidos. Esse valor
 	//pode ser menor que length se chega ao fim do arquivo. Em caso de erro, devolve -1.
 
-	if (mountState == 0) {
-		printf("Arquivo sistema nao montado. ERRO\n");
-		return -1;
-	}
-	for (int i = 0; i < N_ITEMS; i++) {
-		if (dir[i].used && strcmp(dir[i].name, name) == 0) {
-				
+    if (mountState == 0) {
+        printf("Arquivo sistema nao montado. ERRO\n");
+        return -1;
+    }
+    for (int i = 0; i < N_ITEMS; i++) {
+        if (dir[i].used && strcmp(dir[i].name, name) == 0) {
+            unsigned int b = dir[i].first;
+            int file_size = dir[i].length;
 
-			unsigned int b = dir[i].first;
-			int bytes_read = 0;
-			int bytes_to_read = length;
+            if (offset >= file_size) return 0; // nada a ler
 
-			// Verifica se o arquivo está vazio ou não alocado antes de avançar
-			if (b == EOFF || b == FREE) {
-				printf("Arquivo vazio ou não alocado. ERRO\n");
-				return -1;
-			}
+            int max_to_read = file_size - offset;
+            if (length > max_to_read) length = max_to_read;
 
-			// Avança até o bloco correto
-			while (b != EOFF && b != FREE && offset >= BLOCK_SIZE) {
-				offset -= BLOCK_SIZE;
-				b = fat[b];
-			}
+            int bytes_read = 0;
+            int bytes_to_read = length;
 
-			char block[BLOCK_SIZE];
-			while (b != EOFF && b != FREE && bytes_to_read > 0 ) {
-				if (b + TABLE >= sb.number_blocks) {
-					printf("Bloco fora dos limites. ERRO\n");
-					return -1;
-				}
-				ds_read(TABLE + b, block);
-				int to_copy = BLOCK_SIZE - offset < bytes_to_read ? BLOCK_SIZE - offset : bytes_to_read;
-				memcpy(buff + bytes_read, block + offset, to_copy);
-				bytes_read += to_copy;
-				bytes_to_read -= to_copy;
-				offset = 0; // Após o primeiro bloco, offset é sempre 0
-				b = fat[b];
-			}
+            if (b == EOFF || b == FREE) {
+                printf("Arquivo vazio ou não alocado. ERRO\n");
+                return -1;
+            }
 
-			return bytes_read;
-		}
-	}
-	printf("Arquivo nao encontrado. ERRO\n");
-	return -1;
+            while (b != EOFF && b != FREE && offset >= BLOCK_SIZE) {
+                offset -= BLOCK_SIZE;
+                b = fat[b];
+            }
+
+            char block[BLOCK_SIZE];
+            while (b != EOFF && b != FREE && bytes_to_read > 0) {
+                ds_read(TABLE + b, block);
+                int to_copy = BLOCK_SIZE - offset < bytes_to_read ? BLOCK_SIZE - offset : bytes_to_read;
+                memcpy(buff + bytes_read, block + offset, to_copy);
+                bytes_read += to_copy;
+                bytes_to_read -= to_copy;
+                offset = 0;
+                b = fat[b];
+            }
+
+            return bytes_read;
+        }
+    }
+    printf("Arquivo nao encontrado. ERRO\n");
+    return -1;
 }
 
 //Retorna a quantidade de caracteres escritos
@@ -346,13 +345,119 @@ int fat_write( char *name, const char *buff, int length, int offset){
 		printf("Arquivo sistema nao montado. ERRO\n");
 		return -1;
 	} 
-	
-	
-	
-	
+ if (mountState == 0) {
+        printf("Arquivo sistema nao montado. ERRO\n");
+        return -1;
+    }
 
+    // Encontrar o arquivo no diretório
+    int file_index = -1;
+    for (int i = 0; i < N_ITEMS; i++) {
+        if (dir[i].used && strcmp(dir[i].name, name) == 0) {
+            file_index = i;
+            break;
+        }
+    }
 
+    if (file_index == -1) {
+        printf("Arquivo nao encontrado. ERRO\n");
+        return -1;
+    }
 
-	printf("Arquivo nao encontrado. ERRO\n");	
-	return -1;
+    dir_item *file = &dir[file_index];
+
+    // Se ainda não tem blocos, precisamos alocar o primeiro
+    if (file->first == EOFF || file->first == FREE) {
+        for (int i = TABLE + sb.n_fat_blocks; i < sb.number_blocks; i++) {
+            if (fat[i] == FREE) {
+                file->first = i;
+                fat[i] = EOFF;
+                break;
+            }
+        }
+        if (file->first == EOFF || file->first == FREE) {
+            printf("Sem blocos livres\n");
+            return -1;
+        }
+    }
+
+    // Navegar até o bloco de início de escrita
+    unsigned int b = file->first;
+    unsigned int prev = -1;
+    int offset_copy = offset;
+    while (offset_copy >= BLOCK_SIZE) {
+        if (fat[b] == EOFF) {
+            // Alocar novo bloco
+            for (int i = TABLE + sb.n_fat_blocks; i < sb.number_blocks; i++) {
+                if (fat[i] == FREE) {
+                    fat[b] = i;
+                    fat[i] = EOFF;
+                    break;
+                }
+            }
+            if (fat[b] == EOFF) {
+                printf("Sem blocos livres\n");
+                return -1;
+            }
+        }
+        b = fat[b];
+        offset_copy -= BLOCK_SIZE;
+    }
+
+    int written = 0;
+    int remaining = length;
+    int internal_offset = offset % BLOCK_SIZE;
+    char block[BLOCK_SIZE];
+
+    while (remaining > 0) {
+        ds_read(TABLE + b, block);
+
+        int to_write = BLOCK_SIZE - internal_offset;
+        if (to_write > remaining) to_write = remaining;
+
+        memcpy(block + internal_offset, buff + written, to_write);
+        ds_write(TABLE + b, block);
+
+        written += to_write;
+        remaining -= to_write;
+        internal_offset = 0;
+
+        if (remaining > 0) {
+            if (fat[b] == EOFF) {
+                // Alocar novo bloco
+                int new_block = -1;
+                for (int i = TABLE + sb.n_fat_blocks; i < sb.number_blocks; i++) {
+                    if (fat[i] == FREE) {
+                        new_block = i;
+                        break;
+                    }
+                }
+                if (new_block == -1) {
+                    printf("Sem blocos livres\n");
+                    break;  // disco cheio
+                }
+                fat[b] = new_block;
+                fat[new_block] = EOFF;
+            }
+            b = fat[b];
+        }
+    }
+
+    if (offset + written > file->length)
+        file->length = offset + written;
+
+    // Atualizar diretório no disco
+    char buffer[BLOCK_SIZE];
+    memset(buffer, 0, BLOCK_SIZE);
+    memcpy(buffer, dir, sizeof(dir));
+    ds_write(DIR, buffer);
+
+    // Atualizar FAT no disco
+    for (int i = 0; i < sb.n_fat_blocks; i++) {
+        memset(buffer, 0, BLOCK_SIZE);
+        memcpy(buffer, &fat[i * (BLOCK_SIZE / sizeof(int))], BLOCK_SIZE);
+        ds_write(TABLE + i, buffer);
+    }
+
+    return written;
 }
