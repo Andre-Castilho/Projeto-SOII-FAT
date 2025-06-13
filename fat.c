@@ -48,6 +48,7 @@ unsigned int *fat;
 int mountState = 0;
 
 int fat_format(){ 
+	//Formata o sistema de arquivos, criando um novo superbloco, uma nova FAT e um novo diretório.
 	if(mountState == 1) { 
 		printf("Arquivo sistema ja montado. ERRO\n");
 		return -1;
@@ -62,6 +63,7 @@ int fat_format(){
 
 	memset(dir, 0, sizeof(dir));
 
+	// Alocar FAT em RAM
 	if(fat) {
 		free(fat);
 	}
@@ -70,16 +72,20 @@ int fat_format(){
 		printf("Erro de alocacao da FAT\n");
 		return -1;
 	}
+	// Inicializar FAT
 	memset(fat, 0, size * sizeof(int));
 
+	// Marcar blocos de FAT como livres
 	memset(buffer, 0, BLOCK_SIZE);
 	memcpy(buffer, &sb, sizeof(super));
 	ds_write(SUPER, buffer);
 
+	// Escrever diretório vazio no disco
 	memset(buffer, 0, BLOCK_SIZE);
 	memcpy(buffer, dir, sizeof(dir));
 	ds_write(DIR, buffer);
 
+	// Escrever FAT no disco
 	for(int i = 0; i < sb.n_fat_blocks; i++) {
 		memset(buffer, 0, BLOCK_SIZE);
 		memcpy(buffer, &fat[i * (BLOCK_SIZE / sizeof(int))], BLOCK_SIZE);
@@ -95,6 +101,7 @@ void fat_debug(){
 	char buffer[BLOCK_SIZE];
 	int i;
 
+	// faz todo o carregamento do disco, apenas se nao estiver montado
 	if(mountState == 0) {
 		// Ler superbloco
 		ds_read(SUPER, buffer);
@@ -124,11 +131,10 @@ void fat_debug(){
 	printf("\t%d blocks\n", sb.number_blocks);
 	printf("\t%d blocks fat\n", sb.n_fat_blocks);
 
-	printf("%ld", N_ITEMS);
 	// Exibir arquivos
 	for(i = 0; i < N_ITEMS; i++) {
 		if(dir[i].used) {
-			printf("\nFile \"%s\": %ld\n", dir[i].name, strlen(dir[i].name));
+			printf("\nFile \"%s\": \n", dir[i].name);
 			printf("\tsize: %u bytes\n", dir[i].length);
 			printf("\tBlocks:");
 			unsigned int b = dir[i].first;
@@ -142,14 +148,13 @@ void fat_debug(){
 
 	if(mountState == 0) {
 		printf("\nFile system not mounted.\n\n");
-		free(fat);
 	} else {
 		printf("\nFile system mounted.\n\n");
 	}
 }
 
 int fat_mount(){
-  	char buffer[BLOCK_SIZE];
+	char buffer[BLOCK_SIZE];
 
 	// Ler superbloco
 	ds_read(SUPER, buffer);
@@ -160,34 +165,50 @@ int fat_mount(){
 		return -1;
 	}
 
+	if (sb.number_blocks <= 0 || sb.number_blocks > 100000) {
+		printf("superbloco invalido: number_blocks = %d\n", sb.number_blocks);
+		return -1;
+	}
+
 	// Ler diretório
 	ds_read(DIR, buffer);
 	memcpy(&dir, buffer, sizeof(dir));
 
 	// Alocar FAT e carregar do disco
-	if (mountState == 1) free(fat);
+	if (fat) free(fat);
 	fat = malloc(sb.number_blocks * sizeof(int));
 	if (!fat) {
 		printf("erro de alocacao da FAT\n");
 		return -1;
 	}
 
+	int entries_per_block = BLOCK_SIZE / sizeof(int);
 	for (int i = 0; i < sb.n_fat_blocks; i++) {
 		ds_read(TABLE + i, buffer);
-		memcpy(&fat[i * (BLOCK_SIZE / sizeof(int))], buffer, BLOCK_SIZE);
+		int start = i * entries_per_block;
+		int count = entries_per_block;
+
+		if (start + count > sb.number_blocks)
+			count = sb.number_blocks - start;
+
+		memcpy(&fat[start], buffer, count * sizeof(int));
 	}
 
 	mountState = 1;
 	return 0;
 }
 
-int fat_create(char *name){
 
+int fat_create(char *name){
+	//Cria um arquivo com o nome name, alocando blocos livres na FAT e atualizando o diretório.
+
+	// Verifica se o sistema de arquivos está montado
 	if(mountState == 0) {
 		printf("Arquivo sistema nao montado. ERRO\n");
 		return -1;
 	}
 
+	// Verifica se o nome do arquivo já existe
 	for(int i = 0; i < N_ITEMS; i++) {
 		if(dir[i].used && strcmp(dir[i].name, name) == 0) {
 			printf("Arquivo ja existe. ERRO\n");
@@ -195,12 +216,16 @@ int fat_create(char *name){
 		}
 	}
 
+	// Verifica se o nome do arquivo é válido
 	if(strlen(name) > MAX_LETTERS) {
 		printf("Nome do arquivo muito longo. ERRO\n");
 		return -1;
 	}
 
+	// Verifica se o diretório tem espaço
 	for(int i = 0; i < N_ITEMS; i++) {
+		// Se encontrar uma entrada não usada, cria o arquivo
+		// e atualiza o diretório
 		if(!dir[i].used) {
 			dir[i].used = 1;
 			strcpy(dir[i].name, name);
@@ -317,7 +342,7 @@ int fat_read( char *name, char *buff, int length, int offset){
 
             char block[BLOCK_SIZE];
             while (b != EOFF && b != FREE && bytes_to_read > 0) {
-                ds_read(TABLE + b, block);
+                ds_read(b, block);
                 int to_copy = BLOCK_SIZE - offset < bytes_to_read ? BLOCK_SIZE - offset : bytes_to_read;
                 memcpy(buff + bytes_read, block + offset, to_copy);
                 bytes_read += to_copy;
@@ -388,17 +413,19 @@ int fat_write( char *name, const char *buff, int length, int offset){
     while (offset_copy >= BLOCK_SIZE) {
         if (fat[b] == EOFF) {
             // Alocar novo bloco
+            int new_block = -1;
             for (int i = TABLE + sb.n_fat_blocks; i < sb.number_blocks; i++) {
                 if (fat[i] == FREE) {
-                    fat[b] = i;
-                    fat[i] = EOFF;
+                    new_block = i;
                     break;
                 }
             }
-            if (fat[b] == EOFF) {
+            if (new_block == -1) {
                 printf("Sem blocos livres\n");
                 return -1;
             }
+            fat[b] = new_block;
+            fat[new_block] = EOFF;
         }
         b = fat[b];
         offset_copy -= BLOCK_SIZE;
@@ -410,13 +437,13 @@ int fat_write( char *name, const char *buff, int length, int offset){
     char block[BLOCK_SIZE];
 
     while (remaining > 0) {
-        ds_read(TABLE + b, block);
+        ds_read(b, block);
 
         int to_write = BLOCK_SIZE - internal_offset;
         if (to_write > remaining) to_write = remaining;
 
         memcpy(block + internal_offset, buff + written, to_write);
-        ds_write(TABLE + b, block);
+        ds_write(b, block);
 
         written += to_write;
         remaining -= to_write;
