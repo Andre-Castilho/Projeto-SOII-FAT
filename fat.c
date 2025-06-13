@@ -48,7 +48,10 @@ unsigned int *fat;
 int mountState = 0;
 
 int fat_format(){ 
-	//Formata o sistema de arquivos, criando um novo superbloco, uma nova FAT e um novo diretório.
+	/*Cria um novo sistema de arquivos no disco atual, apagando tudo se for o caso. Cria o superbloco, o diretório e a FAT. 
+	Se alguém tentar formatar um sistema de arquivos montado, nada deve ser feito, e um código de erro é devolvido. 
+	Devolver 0 indica sucesso e -1, erro.*/
+
 	if(mountState == 1) { 
 		printf("Arquivo sistema ja montado. ERRO\n");
 		return -1;
@@ -96,6 +99,8 @@ int fat_format(){
 }
 
 void fat_debug(){
+	/*Exibe informações do disco. */
+
 	printf("\ndepurando...\n\n");
 	
 	char buffer[BLOCK_SIZE];
@@ -154,6 +159,10 @@ void fat_debug(){
 }
 
 int fat_mount(){
+	/*Verifica se o sistema de arquivos é válido. Se for, traz a FAT e o diretório para a RAM, representadas com registros (structures). 
+	As operações abaixo não têm como funcionar se o sistema de arquivos não estiver montado. 
+	Devolver 0 indica sucesso e -1, erro.*/
+
 	char buffer[BLOCK_SIZE];
 
 	// Ler superbloco
@@ -198,9 +207,8 @@ int fat_mount(){
 	return 0;
 }
 
-
 int fat_create(char *name){
-	//Cria um arquivo com o nome name, alocando blocos livres na FAT e atualizando o diretório.
+	//Cria uma entrada de diretório descrevendo um arquivo vazio. A atualização do diretório acontece na RAM e no disco. Devolver 0 indica sucesso e -1, erro.
 
 	// Verifica se o sistema de arquivos está montado
 	if(mountState == 0) {
@@ -246,19 +254,22 @@ int fat_create(char *name){
 }
 
 int fat_delete( char *name){
-	//Remove o arquivo, liberando todos os blocos associados com o nome, 
-	//atualizando a FAT na RAM e no disco. Em seguida, libera a entrada no diretório. 
-	//Devolver 0 indica sucesso e -1, erro.
+	/*Remove o arquivo, liberando todos os blocos associados com o nome, 
+	atualizando a FAT na RAM e no disco. Em seguida, libera a entrada no diretório. 
+	Devolver 0 indica sucesso e -1, erro. */
 
+	//Verifica se o sistema de arquivos está montado
 	if (mountState == 0) {
 		printf("Arquivo sistema nao montado. ERRO\n");
 		return -1;
 	}
 
+
+	//Procura o arquivo no diretório
 	int found = 0;
 	for (int i = 0; i < N_ITEMS; i++) {
 		if (dir[i].used && strcmp(dir[i].name, name) == 0) {
-			found = 1;
+			found = 1; //arquivo encontrado
 			unsigned int b = dir[i].first;
 			// Libera todos os blocos na FAT
 			while (b != EOFF && b != FREE) {
@@ -294,10 +305,13 @@ int fat_delete( char *name){
 
 int fat_getsize( char *name){ 
 	//Devolve o número de bytes do arquivo. Em caso de erro, devolve -1.
+	
+	//Verifica se o sistema de arquivos está montado
 	if (mountState == 0) {
 		printf("Arquivo sistema nao montado. ERRO\n");
 		return -1;
 	}
+	//Procura o arquivo no diretório e retorna o tamanho
 	for (int i = 0; i < N_ITEMS; i++) {
 		if (dir[i].used && strcmp(dir[i].name, name) == 0) {
 			return dir[i].length;
@@ -309,14 +323,16 @@ int fat_getsize( char *name){
 
 //Retorna a quantidade de caracteres lidos
 int fat_read( char *name, char *buff, int length, int offset){
-	//Lê dados de um arquivo válido. Copia length bytes do arquivo para buff, começando
- 	// offset bytes a partir do início do arquivo. Devolve o total de bytes lidos. Esse valor
-	//pode ser menor que length se chega ao fim do arquivo. Em caso de erro, devolve -1.
+	/*Lê dados de um arquivo válido. Copia length bytes do arquivo para buff, começando
+ 	 offset bytes a partir do início do arquivo. Devolve o total de bytes lidos. Esse valor
+	pode ser menor que length se chega ao fim do arquivo. Em caso de erro, devolve -1. */
 
+	// Verifica se o sistema de arquivos está montado
     if (mountState == 0) {
         printf("Arquivo sistema nao montado. ERRO\n");
         return -1;
     }
+	//Procura o arquivo no diretório
     for (int i = 0; i < N_ITEMS; i++) {
         if (dir[i].used && strcmp(dir[i].name, name) == 0) {
             unsigned int b = dir[i].first;
@@ -324,22 +340,26 @@ int fat_read( char *name, char *buff, int length, int offset){
 
             if (offset >= file_size) return 0; // nada a ler
 
+			//define o quanto ler
             int max_to_read = file_size - offset;
             if (length > max_to_read) length = max_to_read;
 
             int bytes_read = 0;
             int bytes_to_read = length;
 
+			//se b estiver livre ou for fim do arquivo, retorna erro
             if (b == EOFF || b == FREE) {
                 printf("Arquivo vazio ou não alocado. ERRO\n");
                 return -1;
             }
 
+			// Navega até o bloco correto
             while (b != EOFF && b != FREE && offset >= BLOCK_SIZE) {
                 offset -= BLOCK_SIZE;
                 b = fat[b];
             }
 
+			//faz a leitura do arquivo em si
             char block[BLOCK_SIZE];
             while (b != EOFF && b != FREE && bytes_to_read > 0) {
                 ds_read(b, block);
@@ -360,20 +380,17 @@ int fat_read( char *name, char *buff, int length, int offset){
 
 //Retorna a quantidade de caracteres escritos
 int fat_write( char *name, const char *buff, int length, int offset){
-	//Escreve dados em um arquivo. Copia length bytes de buff para o arquivo,
-	//começando de offset bytes a partir do início do arquivo. Em geral, essa operação
-	//envolve a alocação de blocos livres. Devolve o total de bytes escritos. Esse valor
-	//pode ser menor que length, por exemplo, se o disco enche. Em caso de erro,
-	//devolve -1.
+	/*Escreve dados em um arquivo. Copia length bytes de buff para o arquivo,
+	começando de offset bytes a partir do início do arquivo. Em geral, essa operação
+	envolve a alocação de blocos livres. Devolve o total de bytes escritos. Esse valor
+	pode ser menor que length, por exemplo, se o disco enche. Em caso de erro,
+	devolve -1.*/
 
+	// Verifica se o sistema de arquivos está montado
 	if (mountState == 0) {
 		printf("Arquivo sistema nao montado. ERRO\n");
 		return -1;
 	} 
- if (mountState == 0) {
-        printf("Arquivo sistema nao montado. ERRO\n");
-        return -1;
-    }
 
     // Encontrar o arquivo no diretório
     int file_index = -1;
@@ -384,6 +401,7 @@ int fat_write( char *name, const char *buff, int length, int offset){
         }
     }
 
+	// Se o arquivo não foi encontrado, retorna erro
     if (file_index == -1) {
         printf("Arquivo nao encontrado. ERRO\n");
         return -1;
@@ -391,7 +409,7 @@ int fat_write( char *name, const char *buff, int length, int offset){
 
     dir_item *file = &dir[file_index];
 
-    // Se ainda não tem blocos, precisamos alocar o primeiro
+    // Se ainda não tem blocos, é preciso alocar o primeiro
     if (file->first == EOFF || file->first == FREE) {
         for (int i = TABLE + sb.n_fat_blocks; i < sb.number_blocks; i++) {
             if (fat[i] == FREE) {
@@ -406,7 +424,7 @@ int fat_write( char *name, const char *buff, int length, int offset){
         }
     }
 
-    // Navegar até o bloco de início de escrita
+    // Navega até o bloco de início de escrita
     unsigned int b = file->first;
     unsigned int prev = -1;
     int offset_copy = offset;
@@ -420,13 +438,16 @@ int fat_write( char *name, const char *buff, int length, int offset){
                     break;
                 }
             }
+			// se nao houver blocos livres, retorna erro
             if (new_block == -1) {
                 printf("Sem blocos livres\n");
                 return -1;
             }
+			// Atualiza a FAT
             fat[b] = new_block;
             fat[new_block] = EOFF;
         }
+		// Navega para o próximo bloco
         b = fat[b];
         offset_copy -= BLOCK_SIZE;
     }
@@ -436,6 +457,7 @@ int fat_write( char *name, const char *buff, int length, int offset){
     int internal_offset = offset % BLOCK_SIZE;
     char block[BLOCK_SIZE];
 
+	//faz a escrita no arquivo em si
     while (remaining > 0) {
         ds_read(b, block);
 
@@ -449,6 +471,7 @@ int fat_write( char *name, const char *buff, int length, int offset){
         remaining -= to_write;
         internal_offset = 0;
 
+		// Se ainda há bytes a escrever, navega para o próximo bloco
         if (remaining > 0) {
             if (fat[b] == EOFF) {
                 // Alocar novo bloco
@@ -463,23 +486,26 @@ int fat_write( char *name, const char *buff, int length, int offset){
                     printf("Sem blocos livres\n");
                     break;  // disco cheio
                 }
+				// Atualiza a FAT
                 fat[b] = new_block;
                 fat[new_block] = EOFF;
             }
+			// Navega para o próximo bloco
             b = fat[b];
         }
     }
 
+	// Atualiza o tamanho do arquivo no diretório
     if (offset + written > file->length)
         file->length = offset + written;
 
-    // Atualizar diretório no disco
+    // Atualiza diretório no disco
     char buffer[BLOCK_SIZE];
     memset(buffer, 0, BLOCK_SIZE);
     memcpy(buffer, dir, sizeof(dir));
     ds_write(DIR, buffer);
 
-    // Atualizar FAT no disco
+    // Atualiza FAT no disco
     for (int i = 0; i < sb.n_fat_blocks; i++) {
         memset(buffer, 0, BLOCK_SIZE);
         memcpy(buffer, &fat[i * (BLOCK_SIZE / sizeof(int))], BLOCK_SIZE);
